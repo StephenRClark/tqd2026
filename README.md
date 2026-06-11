@@ -90,8 +90,7 @@ algorithms:
 ...
 ```
 
-We also need to install packages for doing linear algebra, random numbers, orthogonal polynomials, signal processing and plotting
-as:
+We also need to install additional useful packages for doing linear algebra, random numbers, orthogonal polynomials, signal processing, printing output and plotting as:
 
 ``` {.cmd language="cmd"}
 (@v1.X) pkg> add LinearAlgebra
@@ -101,6 +100,8 @@ as:
 (@v1.X) pkg> add PolyChaos
 ...
 (@v1.X) pkg> add DSP
+...
+(@v1.X) pkg> add Printf
 ...
 (@v1.X) pkg> add Plots
 ...
