@@ -30,16 +30,7 @@ installed on your laptop:
 ## Packages required
 
 Once you have installed `Jupyter` and `Julia` we will need to add some
-packages to `Julia`. You may need to run the following lines in the
-terminal (for a Mac) to create a soft link to the new installation
-
-``` {.cmd language="cmd"}
-your_mac$ rm -f /usr/local/bin/julia
-your_mac$ ln -s /Applications/Julia-1.X.X.app/Contents/Resources/julia/bin/julia /usr/local/bin/julia
-```
-
-replacing "1.X.X\" by whatever latest version number you installed. This
-will then allow you to start `Julia` inside a terminal and launch an
+packages to `Julia`. You should be able to start `Julia` inside a terminal and launch an
 interactive `Julia` session (also known as REPL) in a terminal. The
 following will appear:
 
