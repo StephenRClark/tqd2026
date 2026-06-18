@@ -1,3 +1,38 @@
+# --- TQD2026 summer school ---
+#
+# MPS_MPO_helpers.jl
+#
+# Helper routines for the TQD2026 summer school short-course on 
+# "Tensor networks methods for quantum (thermo)dynamics". The
+# functions are divided into 4 sections:
+#
+# (1) Trotter circuit to MPO
+# Routines for constructing local Trotter circuits from ITensor OpSum
+# Hamiltonians and compiling them into MPO time-step operators. The code supports 
+# OpSum terms acting on contiguous blocks of up to a chosen range (typically 4), 
+# including nearest-neighbour and short-range extended interactions. For fermionic 
+# site types, local terms are dressed with Jordan-Wigner parity strings following 
+# ITensor's OpSum-to-MPO convention. These routines are used in all 4 notebooks.
+#
+# (2) Thermal purification
+# A small number of helper functions for building maximally entangled ancilla states,
+# constructing MPO series expansions and computing expectation values.
+#
+# (3) Lindbladians 
+# Functions for constructing Lindbladian superoperators from OpSum definitions
+# of Hamiltonians and jump operators forming MPOs with "fat" operator indices.
+#
+# (4) Chain-mapping
+# A wide range of helper functions for constructing a chain-mapping of a continuous
+# fermionic thermal bath defined by a spectral function. Numerical and analytical 
+# solutions to key test cases are also implemented.
+#
+# Author: Stephen R. Clark
+# Contributions: David Strachan
+#
+# Copyright (c) 2026 Stephen R. Clark, University of Bristol
+# License: MIT
+
 module MPS_MPO_helpers
 
 using ITensors
@@ -8,6 +43,7 @@ using DSP
 
 export GateLayer,
   second_order_trotter_circuit,
+  flatten_gates,
   circuit_mpo,
   apply_mpo_step,
   half_chain_entropy,
@@ -29,16 +65,18 @@ export GateLayer,
   propagate_correlations,
   LB_current
 
+"""
+    --------------------------------------------
+    Struct definitions used for chain-mappings
+    --------------------------------------------
+"""
+
 const I2 = ComplexF64[1 0; 0 1]
 const Sp = ComplexF64[0 1; 0 0]
 const Sm = ComplexF64[0 0; 1 0]
 const Sz = ComplexF64[0.5 0; 0 -0.5]
 const Sx = 0.5 * ComplexF64[0 1; 1 0]
 const Sy = 0.5 * ComplexF64[0 -im; im 0]
-
-"""
-Struct definitions for parameters
-"""
 
 Base.@kwdef struct bath_parameters
     Γ::Float64 #Coupling to system
@@ -78,6 +116,12 @@ struct ChainLayout
 end
 
 """
+    --------------------------------------------
+    Trotter circuit to MPO helper functions:
+    --------------------------------------------
+"""
+
+"""
     LocalBlock(sites, h)
 
 Container for one local Hamiltonian piece. `sites` is a contiguous interval
@@ -103,11 +147,21 @@ struct GateLayer
   gates::Vector{ITensor}
 end
 
-# These thin wrappers isolate the few places where we inspect ITensor's OpSum
-# representation. Keeping them here makes it easier to change the parser later.
+"""
+   opsum_terms(os), term_ops(term)
+
+These thin wrappers isolate the few places where we inspect ITensor's OpSum
+representation. Keeping them here makes it easier to change the parser later.
+""" 
 opsum_terms(os) = ITensors.terms(os)
 term_ops(term) = ITensors.terms(term)
 
+"""
+    op_site_number(o)
+Return the site number that a one-site operator `o` acts on. This is used to sort 
+the operators in an OpSum term into site order, and to detect any skipped sites 
+that require identity operators to be inserted.
+"""
 function op_site_number(o)
   op_sites = ITensors.sites(o)
   length(op_sites) == 1 ||
@@ -115,10 +169,22 @@ function op_site_number(o)
   return only(op_sites)
 end
 
+"""
+    term_sites(term), term_interval(term), interval_length(interval)
+
+Return the set of site numbers that an OpSum term acts on, the contiguous interval 
+that covers those sites, and the length of a contiguous interval.
+"""
 term_sites(term) = sort(unique(op_site_number.(term_ops(term))))
 term_interval(term) = first(term_sites(term)):last(term_sites(term))
 interval_length(interval::UnitRange{Int}) = last(interval) - first(interval) + 1
 
+"""
+    intervals_overlap(a, b) 
+
+Check whether two contiguous site intervals overlap. This is used to group local 
+Hamiltonian blocks into non-overlapping layers.
+"""
 function intervals_overlap(a::UnitRange{Int}, b::UnitRange{Int})
   return first(a) <= last(b) && first(b) <= last(a)
 end
@@ -155,16 +221,36 @@ function check_supported_opsum(os, sites; max_range::Int=4)
   return nothing
 end
 
+"""
+    local_operator(o, sites)  
+
+Return the ITensor representation of a one-site operator `o` from an OpSum.
+"""
 function local_operator(o, sites)
   i = op_site_number(o)
   return op(ITensors.which_op(o), sites[i]; ITensors.params(o)...)
 end
 
+"""
+    op_has_fermion_string(o, sites)
+
+Check whether a one-site operator `o` is parity-odd and therefore requires a 
+Jordan-Wigner string of `"F"` operators to the left. This is only relevant for 
+fermionic site types, and is ignored if ITensor's auto-fermion mode is enabled.
+"""
 function op_has_fermion_string(o, sites)
   i = op_site_number(o)
   return ITensors.has_fermion_string(ITensors.which_op(o), sites[i]; ITensors.params(o)...)
 end
 
+"""
+    local_operator_with_fermion_string(o, sites)
+
+Return the ITensor representation of a one-site operator `o` from an OpSum, 
+together with a Jordan-Wigner string of `"F"` operators to the left. This is 
+only relevant for fermionic site types, and is ignored if ITensor's auto-fermion 
+mode is enabled.
+"""
 function local_operator_with_fermion_string(o, sites)
   i = op_site_number(o)
   opname = ITensors.which_op(o)
@@ -173,6 +259,13 @@ function local_operator_with_fermion_string(o, sites)
   return op("$(opname) * F", sites[i]; ITensors.params(o)...)
 end
 
+"""
+    sorted_term_ops_and_fermion_sign(term, sites)
+
+Sort the operators in an OpSum term into site order, and return the corresponding 
+fermionic sign. This is only relevant for fermionic site types, and is ignored if 
+ITensor's auto-fermion mode is enabled.
+"""
 function sorted_term_ops_and_fermion_sign(term, sites)
   ops = collect(term_ops(term))
   perm = Vector{Int}(undef, length(ops))
@@ -191,6 +284,13 @@ function sorted_term_ops_and_fermion_sign(term, sites)
   return sorted_ops, sign
 end
 
+"""
+    fermion_string_sites(sorted_ops, sites)
+
+Return the set of site numbers that require a Jordan-Wigner string of `"F"` operators 
+to the left. This is only relevant for fermionic site types, and is ignored if ITensor's 
+auto-fermion mode is enabled.
+"""
 function fermion_string_sites(sorted_ops, sites)
   string_sites = Set{Int}()
   ITensors.using_auto_fermion() && return string_sites
@@ -208,6 +308,12 @@ function fermion_string_sites(sorted_ops, sites)
   return string_sites
 end
 
+"""
+    identity_on_interval(interval, sites)
+
+Return the ITensor representation of the identity operator on a contiguous interval of sites. 
+This is used to fill in skipped sites when materializing an OpSum term.
+"""
 function identity_on_interval(interval::UnitRange{Int}, sites)
   T = op("Id", sites[first(interval)])
   for i in (first(interval) + 1):last(interval)
@@ -472,11 +578,16 @@ function half_chain_entropy(psi::MPS; bond::Int=div(length(psi), 2))
 end
 
 """
+    --------------------------------------------
+    Thermal purification helper functions:
+    --------------------------------------------  
+"""
+
+"""
     expect_MPO(psi::MPS,H::MPO) 
 
 Compute the expectation value of an MPO for an MPS.
 """
-
 function expect_MPO(psi::MPS,H::MPO)
 
   E = real(inner(psi, Apply(H, psi)) / inner(psi, psi))
@@ -488,7 +599,6 @@ end
 
 Compute the low-order series expansion of a MPO H exponential exp(-β H).
 """
-
 function exp_series(H, β, sites; order=3)
 
   ρT = MPO(sites, "Id")
@@ -506,7 +616,6 @@ end
 Return an ITensor representing a Bell pair gate on two sites. This is used to 
 prepare a maximally entangled initial state for testing the Trotter circuit.
 """
-
 function bell_pair_gate(s1, s2)
   G = ITensor(s1', s2', s1, s2)
   G[s1' => 1, s2' => 1, s1 => 1, s2 => 1] = 1 / sqrt(2)
@@ -520,7 +629,6 @@ end
 Prepare an MPS where every pair of adjacent sites is in a Bell pair. This is 
 a highly entangled state used for purified thermal state preparation.
 """ 
-
 function maximally_entangled_pairs(sites)
   psi = MPS(ComplexF64, sites, "Up")
   gates = [bell_pair_gate(sites[j], sites[j + 1]) for j in 1:2:length(sites)]
@@ -529,6 +637,17 @@ function maximally_entangled_pairs(sites)
   return psi
 end
 
+"""
+    --------------------------------------------
+    Lindbladian helper functions:
+    --------------------------------------------  
+"""
+
+"""
+    physical_op(name)
+
+Return the matrix representation of a physical operator given its name.
+"""
 function physical_op(name)
   table = Dict(
     "Id" => I2,
@@ -542,10 +661,22 @@ function physical_op(name)
   return table[String(name)]
 end
 
+"""
+    left_super(A), right_super(A), sandwich_super(A, B)
+
+Return the superoperator representation of a physical operator A, or a sandwich
+superoperator of A and B. These are used to build the Lindbladian in Liouville space.
+"""
 left_super(A) = kron(I2, A)
 right_super(A) = kron(transpose(A), I2)
 sandwich_super(A, B) = kron(transpose(B), A)
 
+"""
+    add_matrix_term!(os, coeff, mats_by_site)
+
+Add a term to an OpSum given its coefficient and a dictionary of site numbers to matrices. 
+This is used to build the Lindbladian in Liouville space.
+"""
 function add_matrix_term!(os, coeff, mats_by_site)
   abs(coeff) < 1e-14 && return os
   args = Any[coeff]
@@ -557,6 +688,12 @@ function add_matrix_term!(os, coeff, mats_by_site)
   return os
 end
 
+"""
+    term_matrix_data(term)
+
+Return the coefficient and a dictionary of site numbers to matrices for a given OpSum term.
+This is used to build the Lindbladian in Liouville space.
+"""
 function term_matrix_data(term)
   coeff = ITensors.coefficient(term)
   mats = Dict{Int,Matrix{ComplexF64}}()
@@ -568,6 +705,12 @@ function term_matrix_data(term)
   return coeff, mats
 end
 
+"""
+    multiply_local_data(coeff1, mats1, coeff2, mats2)
+
+Multiply two local data representations of OpSum terms. This is used to build the 
+Lindbladian in Liouville space.
+"""
 function multiply_local_data(coeff1, mats1, coeff2, mats2)
   mats = Dict(site => Matrix(A) for (site, A) in mats1)
   for (site, A) in mats2
@@ -576,6 +719,15 @@ function multiply_local_data(coeff1, mats1, coeff2, mats2)
   return coeff1 * coeff2, mats
 end
 
+"""
+    adjoint_local_data(coeff, mats)
+    add_left_term!(L, coeff, mats)
+    add_right_term!(L, coeff, mats)
+    add_sandwich_term!(L, coeff, left_mats, right_mats)
+
+These functions are used to build the Lindbladian in Liouville space. They handle
+the adjoint of local data, and add left, right, and sandwich terms to the Lindbladian OpSum.
+"""
 function adjoint_local_data(coeff, mats)
   return conj(coeff), Dict(site => Matrix(A') for (site, A) in mats)
 end
@@ -599,6 +751,16 @@ function add_sandwich_term!(L, coeff, left_mats, right_mats)
   return add_matrix_term!(L, coeff, mats)
 end
 
+"""
+    lindbladian_opsum(H, jumps)
+
+Construct the Lindbladian superoperator in Liouville space from a Hamiltonian
+`H` and a list of jump operators `jumps`. The Lindbladian is represented as an
+`OpSum` that includes the Hamiltonian contribution and the dissipative 
+contributions from the jump operators. The Hamiltonian contribution is added as 
+left and right superoperators, while the jump operators contribute both sandwich 
+terms and left/right terms to the Lindbladian.
+"""
 function lindbladian_opsum(H::OpSum, jumps::Vector{<:OpSum})
   L = OpSum()
 
@@ -622,13 +784,39 @@ function lindbladian_opsum(H::OpSum, jumps::Vector{<:OpSum})
   return L
 end
 
+"""
+    product_operator_mps(sites, local_mats)
+
+Construct an MPS that represents a product operator from a list of local matrices.
+Each local matrix is converted into an ITensor and assigned to the corresponding site.
+This function is useful for creating MPS representations of operators that act 
+independently on each site.
+"""
 function product_operator_mps(sites, local_mats)
   return MPS([itensor(vec(Matrix{ComplexF64}(A)), sites[j]) for (j, A) in enumerate(local_mats)])
 end
 
+"""
+    trace_mps(sites), trace_value(rho, trmps)
+These functions compute the trace of a density matrix MPS `rho` by contracting it 
+with a trace MPS `trmps` that represents the identity operator on all sites. The 
+trace value is calculated as the inner product of `trmps` and `rho`.
+"""
 trace_mps(sites) = product_operator_mps(sites, [I2 for _ in sites])
 trace_value(rho, trmps) = inner(trmps, rho)
 
+"""
+    observable_mps(sites, ops)
+    expect_liouville_complex(rho, trmps, sites, ops)
+    expect_liouville(rho, trmps, sites, ops)
+
+Together these functions compute the expectation value of an observable in Liouville space. 
+The observable is specified by a list of tuples `(site_index, operator_matrix)`, where `site_index` 
+is the  index of the site and `operator_matrix` is the matrix representation of the operator acting 
+on that site. The function returns the real part of the expectation value, which is calculated as 
+the inner product of the observable MPS and the density matrix MPS `rho`, normalized by the trace 
+of `rho` with respect to the trace MPS `trmps`.
+"""
 function observable_mps(sites, ops)
   local_ops = [I2 for _ in sites]
   for (j, A) in ops
@@ -645,29 +833,74 @@ function expect_liouville(rho, trmps, sites, ops)
   return real(expect_liouville_complex(rho, trmps, sites, ops))
 end
 
+"""
+    normalize_trace!(rho, trmps)
+
+Normalize the trace of a density matrix MPS `rho` by dividing it by its trace value
+calculated with respect to the trace MPS `trmps` and returning the result.
+"""
 function normalize_trace!(rho, trmps)
   rho[1] *= inv(trace_value(rho, trmps))
   return rho
 end
 
+"""
+    --------------------------------------------
+    Chain-mapping helper functions:
+    --------------------------------------------  
+"""
 
 """
-Chain mapping initialisation functions
-"""
+    fermi_factor(ω,β,μ)
 
+Calculates the Fermi-Dirac distribution function for a given frequency `ω`, inverse temperature `β`, 
+and chemical potential `μ`. This function is used to determine the occupation probability of fermionic 
+modes in the bath.
+"""
 fermi_factor(ω,β,μ) = 1 / (exp(β*(ω-μ)) + 1)
+
+"""
+    heaviside(t)
+
+Calculates the Heaviside step function for a given input `t`. The Heaviside function is defined as 0 
+for negative inputs and 1 for non-negative inputs. 
+"""
 heaviside(t) = 0.5 * (sign.(t) .+ 1)
 
+"""
+    semicircular_density(Γ,ω,D)
+
+Calculates the semicircular spectral density for a given coupling strength `Γ`, frequency `ω`, 
+and bandwidth `D`. The semicircular spectral density is defined as a semicircle function within 
+the frequency range `[-D, D]` and zero outside this range.
+""" 
 function semicircular_density(Γ,ω,D)
     J = real((2*Γ/(π^2))*sqrt.(Complex.(1 .-(ω/D).^2)))
     return J
 end
 
+"""
+    box_spectral_density(Γ,ω,D)
+
+Calculates the box spectral density for a given coupling strength `Γ`, frequency `ω`, 
+and bandwidth `D`. The box spectral density is defined as a constant value within the 
+frequency range `[-D, D]` and zero outside this range.
+"""
 function box_spectral_density(Γ,ω,D)
     #Box spectral density
     return J = (Γ/(2*π))*(heaviside(ω .+ D) .- heaviside(ω .- D))
 end
 
+"""
+    thermofield_spectral_density(ω,bath::bath_parameters,::Filled)
+
+Calculates the spectral density for a filled thermofield chain. The function takes
+the frequency `ω`, bath parameters, and a `Filled` thermofield sector as inputs. 
+It computes the spectral density using a box spectral density function and multiplies 
+it by the Fermi factor, which accounts for the occupation probability of the bath modes. 
+The resulting spectral density is used in the chain mapping process to determine the chain 
+coefficients for the filled thermofield chain representation of the bath.
+"""
 function thermofield_spectral_density(ω,bath::bath_parameters,::Filled)
     #Spectral density for a filled chain
     J = box_spectral_density(bath.Γ,ω,bath.D)
@@ -675,6 +908,16 @@ function thermofield_spectral_density(ω,bath::bath_parameters,::Filled)
     return J * fermi_factor(ω,bath.β,bath.μ)
 end
 
+"""
+    thermofield_spectral_density(ω,bath::bath_parameters,::Empty)
+
+Calculates the spectral density for an empty thermofield chain. The function takes
+the frequency `ω`, bath parameters, and an `Empty` thermofield sector as inputs. 
+It computes the spectral density using a box spectral density function and multiplies 
+it by the complement of the Fermi factor, which accounts for the occupation probability 
+of the bath modes. The resulting spectral density is used in the chain mapping process 
+to determine the chain coefficients for the empty thermofield chain representation of the bath.
+"""
 function thermofield_spectral_density(ω,bath::bath_parameters,::Empty)
     #Spectral density for an empty chain
     J = box_spectral_density(bath.Γ,ω,bath.D)
@@ -682,9 +925,18 @@ function thermofield_spectral_density(ω,bath::bath_parameters,::Empty)
     return J * (1 - fermi_factor(ω,bath.β,bath.μ))
 end
 
-function chain_mapping(bath::bath_parameters,sector::ThermofieldSector)
+"""
+    chain_mapping(bath::bath_parameters,sector::ThermofieldSector)
 
-    #Calculates the chain coefficients using PolyChaos.jl
+Calculates the chain coefficients using PolyChaos.jl for a given bath and thermofield 
+sector. The function returns the chain coefficients α and β, which are used to construct 
+the thermofield chain representation of the bath. The spectral density is computed based 
+on the bath parameters and the specified sector (Filled or Empty). The support for the 
+spectral function is set to be larger than the bath's bandwidth for numerical stability. 
+The function utilizes the Measure and OrthoPoly classes from PolyChaos.jl to perform the 
+necessary calculations and obtain the chain coefficients.
+"""
+function chain_mapping(bath::bath_parameters,sector::ThermofieldSector)
 
     spec_fun(ω) = thermofield_spectral_density(ω,bath,sector)
 
@@ -692,7 +944,7 @@ function chain_mapping(bath::bath_parameters,sector::ThermofieldSector)
     support = (-2*bath.D,2*bath.D)
 
     meas = Measure("thermofield",spec_fun,support,false,Dict())
-    op = OrthoPoly("chain",bath.N-1,meas;Nquad=100000)
+    op = OrthoPoly("chain",bath.N-1,meas;Nquad=100000) #Calculates the chain coefficients using PolyChaos.jl
 
     α = coeffs(op)[:,1]
     β = coeffs(op)[:,2]
@@ -700,9 +952,16 @@ function chain_mapping(bath::bath_parameters,sector::ThermofieldSector)
     return α,sqrt.(β)
 end
 
+"""
+    chain_layout(N_left_bath,N_right_bath,Nsys)
+Arranges the chains in interleaved fashion, with the system at the centre. The 
+left and right baths are represented by their respective number of modes, and 
+the system is defined by its number of sites. The function returns a 
+`ChainLayout` struct that contains the indices of the left filled chain, left 
+empty chain, system, right filled chain, and right empty chain.
+"""
 function chain_layout(N_left_bath,N_right_bath,Nsys)
-    ##Arranges the chains in interleaved fashion, with the system at the centre
-
+  
     N = 2*(N_left_bath+N_right_bath) + Nsys
 
     ChainLayout(
@@ -714,6 +973,12 @@ function chain_layout(N_left_bath,N_right_bath,Nsys)
     )
 end
 
+"""
+    add_chain(H,os,inds,energies,hoppings)
+
+Adds MPO terms and associated single particle Hamiltonian elements for the 
+thermofield chain.
+"""
 function add_chain(H,os,inds,energies,hoppings)
     ##Adds MPO terms and associated single particle hamiltonian elements 
     ##for the thermofield chain
@@ -736,6 +1001,13 @@ function add_chain(H,os,inds,energies,hoppings)
     return H,os
 end
 
+"""
+    couple_sites(H,os,i,j,t)
+
+Couples two sites, used for the system-chain coupling. This function adds the 
+hopping terms between sites `i` and `j` to both the single-particle Hamiltonian 
+matrix `H` and the OpSum representation `os`. The hopping amplitude is given by `t`.
+"""
 function couple_sites(H,os,i,j,t)
     #Couples two sites, used for the system-chain coupling
 
@@ -747,6 +1019,15 @@ function couple_sites(H,os,i,j,t)
     return H,os
 end
 
+"""
+    build_chain_hamiltonian(sites,left,right,sys)
+
+Builds the single-particle Hamiltonian and many-body MPO for a system coupled to two 
+thermofield chains. The left and right baths are represented by their respective 
+parameters, and the system is defined by its energies, hoppings, and interactions. 
+The function returns the MPO representation of the Hamiltonian, the single-particle 
+Hamiltonian matrix, and the OpSum representation of the Hamiltonian.
+"""
 function build_chain_hamiltonian(sites,left,right,sys)
     #builds single particle hamiltonian and many body MPO
 
@@ -767,11 +1048,7 @@ function build_chain_hamiltonian(sites,left,right,sys)
     Hsingle,os = add_chain(Hsingle,os,layout.right_filled,εRF,tRF[2:end])
     Hsingle,os = add_chain(Hsingle,os,layout.right_empty,εRE,tRE[2:end])
 
-
-    #
-    # system
-    #
-
+    #system
     for i in eachindex(sys.ϵ)
         ##energies
         os += sys.ϵ[i],"N",layout.system[i]
@@ -784,10 +1061,7 @@ function build_chain_hamiltonian(sites,left,right,sys)
         end
     end
 
-    #
-    # bath-system couplings
-    #
-
+    #bath-system couplings
     Hsingle,os = couple_sites(Hsingle,os,last(layout.left_filled),first(layout.system),first(tLF))
     Hsingle,os = couple_sites(Hsingle,os,last(layout.left_empty),first(layout.system),first(tLE))
     Hsingle,os = couple_sites(Hsingle,os,first(layout.right_filled),last(layout.system),first(tRF))
@@ -795,6 +1069,15 @@ function build_chain_hamiltonian(sites,left,right,sys)
     return MPO(os,sites), Hsingle, os
 end
 
+"""
+    thermofield_vacuum(left,right,system)
+
+Defines the initial state for a system coupled to two thermofield chains. The left 
+and right baths are represented by their respective parameters, and the system is 
+defined by its occupations. The function returns a vector of occupation states for 
+the left bath, system, and right bath, arranged in an interleaved ordering with the 
+filled mode from the left.
+"""
 function thermofield_vacuum(left,right,system)
     #defines the initial state given both baths have an interleaved ordering
     #for the filled and empty chains. Both start with the filled mode from the left.
@@ -808,19 +1091,16 @@ function thermofield_vacuum(left,right,system)
     return [left_bath_occ;sys_occ;right_bath_occ]
 end
 
+"""
+    propagate_correlations(corr0,H_single,times)
 
-#Evolution functions
-
+Compute the time evolution of a correlation matrix under a single-particle Hamiltonian. 
+The correlation matrix C_ij = <c†_j c_i> evolves according to C(t) = U C(0) U†, where 
+U = exp(-i H_single t). The function returns the correlation matrices at the specified 
+times, transposed to match the standard definition G_ij = <c†_i c_j>.
+"""
 function propagate_correlations(corr0,H_single,times)
     
-    """
-    The correlation matrix C_ij = expect(cdag[j]*c[i]) propagates according to
-    C_ij(t) =U*C_ij(0)*U', but G_ij = expect(cdag[i]*c[j]) doesn't.
-    
-    # This is also why the returned correlation matrices are transposed, as we want the output to be the standard definition
-    # G_ij = expect(cdag[i]*c[j]).
-    """
-
     δt = times[2] - times[1]
     U_step = exp(-im*δt*H_single)
 
@@ -832,12 +1112,14 @@ function propagate_correlations(corr0,H_single,times)
     return transpose.(corrs)
 end
 
+"""
+    LB_current(left,right,system)
+
+Performs a Landauer-Büttiker current calculation of the steady state particle 
+current Jp of a system. This assumes both baths have the same spectral function, 
+given by the box function.
+"""
 function LB_current(left,right,system)
-    
-    """
-    Calculates the steady state particle current Jp of a system 
-    using the Landauer-Büttiker formalism. This assumes both baths have the same spectral function, given by the box function.
-    """
 
     eta = 0.005 
     wsamp = 10000; # Frequency sampling.
@@ -845,13 +1127,11 @@ function LB_current(left,right,system)
     Γ = left.Γ+right.Γ
     dw = w[2] - w[1]; # Frequency increment.
 
-
     ρ = (1/(2*left.D))*(heaviside(w .+ left.D) .- heaviside(w .- left.D))
     Δ_L = (-left.Γ/(2*π))*log.((w.-left.D .+im*eta)./(w .+left.D .+im*eta))    #exact result (only valid for box)
     Δ_R = (-right.Γ/(2*π))*log.((w.-right.D .+im*eta)./(w .+right.D .+im*eta)) #exact result (only valid for box)
         Δ_L = -im*left.D*left.Γ*hilbert(ρ) #more generally
         Δ_R = -im*left.D*right.Γ*hilbert(ρ) #more generally
-
 
     ####Calculate determinant of M matrix (N_sys x N_sys)
     N_sys = length(system.ϵ)
