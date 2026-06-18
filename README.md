@@ -1,13 +1,16 @@
 # Open quantum systems with Tensor Networks - Lake Como TQD 2026 Summer School
 
+The "Tensor networks methods for quantum (thermo)dynamics" short-course in the 
+TQD 2026 summer school is accompanied by 4 `Jupyter` notebooks.
+
 ##  Getting started with the Notebooks
 
-All tensor network calculations in this summer school use the
-using the `Julia` version of the **ITensor** library. You can get
+The tensor network calculations in the notebooks all
+use the `Julia` version of the **ITensor** library. You can get
 detailed instructions on its installation at:\
 <https://itensor.github.io/ITensors.jl/stable/getting_started/Installing.html>\
-These notes give you a summary of the steps and should be sufficient,
-but consult the above link if you encounter issues.
+These notes give you a summary of the steps which should be sufficient,
+but consult the above link if you encounter any issues.
 
 ## Required software
 
@@ -18,7 +21,7 @@ installed on your laptop:
     If you are a `Python` user then you will almost certainly
     have this installed already. Otherwise, I would recommend installing
     `Anaconda` which then sets up an entire suite of software tools for
-    `Python` and other languages including `Jupyter` and `VScode`.
+    `Python` and other languages/tools including `Jupyter` and `VScode`.
 
 -   `Julia`\
     This is the programming language we will be using in this class. No
