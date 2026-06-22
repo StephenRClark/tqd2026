@@ -47,6 +47,9 @@ export GateLayer,
   circuit_mpo,
   apply_mpo_step,
   half_chain_entropy,
+  dense_hamiltonian_matrix,
+  dense_state_vector,
+  dense_half_chain_entropy,
   expect_MPO,
   exp_series,
   maximally_entangled_pairs,
@@ -572,6 +575,88 @@ function half_chain_entropy(psi::MPS; bond::Int=div(length(psi), 2))
   entropy = 0.0
   for n in 1:ITensors.dim(S, 1)
     p = abs2(S[n, n])
+    p > 0 && (entropy -= p * log(p))
+  end
+  return entropy
+end
+
+
+"""
+    --------------------------------------------
+    Full state/operator helper functions:
+    --------------------------------------------  
+"""
+
+function dense_operator_matrix(T::ITensor, sites)
+  row_inds = prime.(sites)
+  col_inds = sites
+  A = array(T, row_inds..., col_inds...)
+  return reshape(A, prod(ITensors.dim.(row_inds)), prod(ITensors.dim.(col_inds)))
+end
+
+function dense_mpo_matrix(W::MPO, sites)
+  old_warn_order = ITensors.disable_warn_order()
+  try
+    T = W[1]
+    for n in 2:length(W)
+      T *= W[n]
+    end
+    return dense_operator_matrix(T, sites)
+  finally
+    ITensors.set_warn_order(old_warn_order)
+  end
+end
+
+"""
+    dense_hamiltonian_matrix(os, sites)
+
+Construct the full dense Hamiltonian matrix represented by an `OpSum` on
+`sites`. This is intended only for exact-diagonalization checks of small
+systems. Internally it first builds `MPO(os, sites)`, so it follows ITensor's
+standard OpSum conventions, including Jordan-Wigner strings for fermionic
+operators.
+"""
+function dense_hamiltonian_matrix(os::OpSum, sites)
+  return dense_mpo_matrix(MPO(os, sites), sites)
+end
+
+"""
+    dense_state_vector(psi, sites)
+
+Contract an MPS into a dense state vector ordered according to `sites`. This is
+only practical for small systems, but is useful for comparing MPS results with
+exact diagonalization.
+"""
+function dense_state_vector(psi::MPS, sites)
+  old_warn_order = ITensors.disable_warn_order()
+  try
+    T = psi[1]
+    for n in 2:length(psi)
+      T *= psi[n]
+    end
+    return vec(array(T, sites...))
+  finally
+    ITensors.set_warn_order(old_warn_order)
+  end
+end
+
+"""
+    dense_half_chain_entropy(state, sites; bond=div(length(sites), 2))
+
+Compute the bipartite von Neumann entropy of a dense state vector across
+`bond`, where sites `1:bond` define the left subsystem.
+"""
+function dense_half_chain_entropy(state::AbstractVector, sites; bond::Integer=div(length(sites), 2))
+  1 <= bond < length(sites) || error("The entropy bond must be between 1 and length(sites)-1.")
+
+  dims = ITensors.dim.(sites)
+  left_dim = prod(dims[1:bond])
+  right_dim = prod(dims[(bond + 1):end])
+  _, singular_values, _ = svd(reshape(state, left_dim, right_dim))
+
+  entropy = 0.0
+  for s in singular_values
+    p = abs2(s)
     p > 0 && (entropy -= p * log(p))
   end
   return entropy
