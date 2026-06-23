@@ -47,7 +47,7 @@ export GateLayer,
   circuit_mpo,
   apply_mpo_step,
   half_chain_entropy,
-  dense_hamiltonian_matrix,
+  dense_operator_matrix,
   dense_state_vector,
   dense_half_chain_entropy,
   expect_MPO,
@@ -59,6 +59,7 @@ export GateLayer,
   trace_value,
   expect_liouville,
   expect_liouville_complex,
+  observable_mps,
   normalize_trace!,
   bath_parameters,
   system_parameters,
@@ -587,7 +588,7 @@ end
     --------------------------------------------  
 """
 
-function dense_operator_matrix(T::ITensor, sites)
+function dense_tensor_matrix(T::ITensor, sites)
   row_inds = prime.(sites)
   col_inds = sites
   A = array(T, row_inds..., col_inds...)
@@ -601,22 +602,22 @@ function dense_mpo_matrix(W::MPO, sites)
     for n in 2:length(W)
       T *= W[n]
     end
-    return dense_operator_matrix(T, sites)
+    return dense_tensor_matrix(T, sites)
   finally
     ITensors.set_warn_order(old_warn_order)
   end
 end
 
 """
-    dense_hamiltonian_matrix(os, sites)
+    dense_operator_matrix(os, sites)
 
-Construct the full dense Hamiltonian matrix represented by an `OpSum` on
+Construct the full dense matrix represented by an operator `OpSum` on
 `sites`. This is intended only for exact-diagonalization checks of small
 systems. Internally it first builds `MPO(os, sites)`, so it follows ITensor's
 standard OpSum conventions, including Jordan-Wigner strings for fermionic
 operators.
 """
-function dense_hamiltonian_matrix(os::OpSum, sites)
+function dense_operator_matrix(os::OpSum, sites)
   return dense_mpo_matrix(MPO(os, sites), sites)
 end
 
