@@ -1,7 +1,8 @@
 # Open quantum systems with Tensor Networks - Lake Como TQD 2026 Summer School
 
 The "Tensor networks methods for quantum (thermo)dynamics" short-course in the 
-TQD 2026 summer school is accompanied by 4 `Jupyter` notebooks.
+TQD 2026 summer school is accompanied by 4 `Jupyter` notebooks and a `PDF` of the lecture
+slides. 
 
 ##  Getting started with the Notebooks
 
